@@ -26,7 +26,7 @@ function formatCount(n: number) {
 }
 
 export function Analytics() {
-  const [range, setRange] = useState("30days");
+  const [range, setRange] = useState("all");
   const [posts, setPosts] = useState<PostRow[]>([]);
   const [customOpen, setCustomOpen] = useState(false);
   const [fromDate, setFromDate] = useState<string>("");
@@ -81,10 +81,12 @@ export function Analytics() {
       // Apply range filter
       const now = new Date();
       let start: Date | null = null;
-      if (range === '7days') start = new Date(now.getTime() - 7*24*60*60*1000);
-      else if (range === '30days') start = new Date(now.getTime() - 30*24*60*60*1000);
-      else if (range === '90days') start = new Date(now.getTime() - 90*24*60*60*1000);
-      else if (range === '1year') start = new Date(now.getTime() - 365*24*60*60*1000);
+      if (range !== 'all') {
+        if (range === '7days') start = new Date(now.getTime() - 7*24*60*60*1000);
+        else if (range === '30days') start = new Date(now.getTime() - 30*24*60*60*1000);
+        else if (range === '90days') start = new Date(now.getTime() - 90*24*60*60*1000);
+        else if (range === '1year') start = new Date(now.getTime() - 365*24*60*60*1000);
+      }
       if (start) {
         query = query.gte('created_at', start.toISOString());
       }
@@ -124,6 +126,7 @@ export function Analytics() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="all">All time</SelectItem>
               <SelectItem value="7days">Last 7 days</SelectItem>
               <SelectItem value="30days">Last 30 days</SelectItem>
               <SelectItem value="90days">Last 90 days</SelectItem>

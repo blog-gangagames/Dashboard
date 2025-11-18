@@ -171,7 +171,8 @@ export function DashboardOverview() {
           .select('title, views, comments, status, author_id, created_at, featured')
           .order('published_at', { ascending: false, nullsFirst: false })
           .order('created_at', { ascending: false })
-          .limit(10);
+          // Removed limit so stats reflect all posts by the author
+          // Recent posts list will still slice to show only a few entries
         if (user) query = query.eq('author_id', user.id);
         const { data, error } = await query;
         if (error) throw error;
