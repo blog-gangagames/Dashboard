@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { MAIN_CATEGORIES, CATEGORY_TREE } from "@/lib/categories";
+import { supabase } from "@/lib/supabaseClient";
 
 export type NewPostPayload = {
   title: string;
@@ -61,6 +62,50 @@ export function CreatePostDialogShared({
   const [currentBlockTag, setCurrentBlockTag] = useState<'p' | 'h1' | 'h2' | 'h3' | 'blockquote' | 'pre' | 'ul' | 'ol' | 'div'>('p');
   const [isUnorderedList, setIsUnorderedList] = useState(false);
   const [isOrderedList, setIsOrderedList] = useState(false);
+
+  // Enhanced Link Picker state
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkMode, setLinkMode] = useState<'internal' | 'external'>('internal');
+  const [linkSearch, setLinkSearch] = useState('');
+  const [linkResults, setLinkResults] = useState<Array<{ id: number; title: string }>>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [linkUrlInput, setLinkUrlInput] = useState('');
+
+  function slugifyTitle(t: string) {
+    try {
+      return String(t || '')
+        .replace(/['"]/g, '')
+        .replace(/[^a-zA-Z0-9]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+    } catch(_) { return ''; }
+  }
+
+  useEffect(() => {
+    const run = async () => {
+      const q = linkSearch.trim();
+      if (!linkOpen || linkMode !== 'internal' || !q) { setLinkResults([]); return; }
+      try {
+        setIsSearching(true);
+        const { data, error } = await supabase
+          .from('posts')
+          .select('id, title, status, published_at, created_at')
+          .eq('status', 'published')
+          .ilike('title', `%${q}%`)
+          .order('published_at', { ascending: false, nullsFirst: false })
+          .order('created_at', { ascending: false })
+          .limit(10);
+        if (error) throw error;
+        const rows = Array.isArray(data) ? data : [];
+        setLinkResults(rows.map(r => ({ id: Number(r.id), title: String(r.title || 'Untitled') })));
+      } catch(e) {
+        setLinkResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    };
+    run();
+  }, [linkOpen, linkMode, linkSearch]);
 
   useEffect(() => {
     try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch {}
@@ -300,38 +345,39 @@ export function CreatePostDialogShared({
   };
 
   const insertLink = () => {
-    const raw = window.prompt('Enter URL');
-    if (!raw) return;
-    const url = raw.trim();
+    // Open enhanced link dialog and remember selection
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      lastRangeRef.current = sel.getRangeAt(0).cloneRange();
+    }
+    setLinkOpen(true);
+  };
+
+  const performInsertLink = (payload: { type: 'internal' | 'external'; post?: { id: number; title: string }; url?: string; }) => {
     const editor = editorRef.current;
     if (!editor) return;
     editor.focus();
     restoreSelection();
     const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) {
-      document.execCommand('insertHTML', false, `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`);
-      updateSeoStats();
-      return;
+    const hadSelection = !!(sel && !sel.isCollapsed && sel.toString().length > 0);
+    let html = '';
+    if (payload.type === 'internal' && payload.post) {
+      const slug = slugifyTitle(payload.post.title);
+      const href = slug ? `/${slug}` : '/';
+      const text = hadSelection ? (sel!.toString()) : payload.post.title;
+      html = `<a href="${href}" data-article-id="${payload.post.id}" data-article-slug="${slug}">${text}</a>`;
+    } else if (payload.type === 'external' && payload.url) {
+      const url = String(payload.url).trim();
+      const text = hadSelection ? (sel!.toString()) : url;
+      html = `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`;
     }
-    const hadSelection = !sel.isCollapsed && sel.toString().length > 0;
-    if (hadSelection) {
-      applyFormat('createLink', url);
-      const node = sel.anchorNode as Node | null;
-      const el = node && node.nodeType === Node.TEXT_NODE ? (node.parentNode as HTMLElement) : (node as HTMLElement);
-      const anchor = el && el.closest && el.closest('a');
-      if (anchor) {
-        try {
-          (anchor as HTMLAnchorElement).target = '_blank';
-          (anchor as HTMLAnchorElement).rel = 'noopener noreferrer';
-        } catch {}
-      } else {
-        const text = sel.toString();
-        document.execCommand('insertHTML', false, `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`);
-      }
-    } else {
-      document.execCommand('insertHTML', false, `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`);
-    }
+    if (!html) { setLinkOpen(false); return; }
+    document.execCommand('insertHTML', false, html);
     updateSeoStats();
+    setLinkOpen(false);
+    setLinkSearch('');
+    setLinkResults([]);
+    setLinkUrlInput('');
   };
 
   const insertImageToEditor = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -370,6 +416,7 @@ export function CreatePostDialogShared({
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[95vw] sm:w-full max-w-2xl md:max-w-4xl p-0 max-h-[85vh] overflow-y-auto overflow-x-hidden">
         <div className="bg-gradient-to-r from-primary to-[#357abd] px-6 py-5 text-white">
@@ -555,6 +602,52 @@ export function CreatePostDialogShared({
         </div>
       </DialogContent>
     </Dialog>
+
+    {/* Link Picker Dialog */}
+    <Dialog open={linkOpen} onOpenChange={setLinkOpen}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Insert Link</DialogTitle>
+          <DialogDescription>Link to another post (inbound) or any URL (outbound).</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            <Button variant={linkMode==='internal'?'default':'outline'} size="sm" onClick={() => setLinkMode('internal')}>Inbound (Post)</Button>
+            <Button variant={linkMode==='external'?'default':'outline'} size="sm" onClick={() => setLinkMode('external')}>Outbound (URL)</Button>
+          </div>
+          {linkMode === 'internal' ? (
+            <div className="space-y-3">
+              <Label>Search posts</Label>
+              <Input placeholder="Type a post title" value={linkSearch} onChange={(e) => setLinkSearch(e.target.value)} />
+              <div className="max-h-48 overflow-auto border rounded">
+                {isSearching ? (
+                  <div className="p-3 text-sm text-muted-foreground">Searching…</div>
+                ) : linkResults.length === 0 ? (
+                  <div className="p-3 text-sm text-muted-foreground">No matches yet. Try typing the title.</div>
+                ) : (
+                  <ul>
+                    {linkResults.map((r) => (
+                      <li key={r.id} className="p-2 hover:bg-muted/20 cursor-pointer" onClick={() => performInsertLink({ type: 'internal', post: r })}>
+                        {r.title}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <Label>URL</Label>
+              <Input placeholder="https://example.com/page" value={linkUrlInput} onChange={(e) => setLinkUrlInput(e.target.value)} />
+              <div className="flex justify-end">
+                <Button onClick={() => performInsertLink({ type: 'external', url: linkUrlInput })} disabled={!linkUrlInput.trim()}>Insert Link</Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
 

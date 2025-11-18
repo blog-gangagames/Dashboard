@@ -120,6 +120,13 @@ export function DashboardOverview() {
   const [currentBlockTag, setCurrentBlockTag] = useState<'p' | 'h1' | 'h2' | 'h3' | 'blockquote' | 'pre' | 'ul' | 'ol' | 'div'>('p');
   const [isUnorderedList, setIsUnorderedList] = useState(false);
   const [isOrderedList, setIsOrderedList] = useState(false);
+  // Link picker state for inbound/outbound linking
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkMode, setLinkMode] = useState<'internal' | 'external'>('internal');
+  const [linkSearch, setLinkSearch] = useState('');
+  const [linkResults, setLinkResults] = useState<Array<{ id: number; title: string }>>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [linkUrlInput, setLinkUrlInput] = useState('');
   const lastRangeRef = useRef<Range | null>(null);
   const [seoStats, setSeoStats] = useState<{ words: number; h1: boolean; h2s: number; links: number }>({ words: 0, h1: false, h2s: 0, links: 0 });
   const [stats, setStats] = useState(defaultStats.map(s => ({ ...s, value: "0", change: "", trend: s.trend })));
@@ -239,6 +246,42 @@ export function DashboardOverview() {
     const links = (html.match(/<a\b/gi) || []).length;
     setSeoStats({ words, h1, h2s, links });
   };
+
+  function slugifyTitle(t: string) {
+    try {
+      return String(t || '')
+        .replace(/['"]/g, '')
+        .replace(/[^a-zA-Z0-9]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+    } catch(_) { return ''; }
+  }
+
+  useEffect(() => {
+    const run = async () => {
+      const q = linkSearch.trim();
+      if (!linkOpen || linkMode !== 'internal' || !q) { setLinkResults([]); return; }
+      try {
+        setIsSearching(true);
+        const { data, error } = await supabase
+          .from('posts')
+          .select('id, title, status, published_at, created_at')
+          .eq('status', 'published')
+          .ilike('title', `%${q}%`)
+          .order('published_at', { ascending: false, nullsFirst: false })
+          .order('created_at', { ascending: false })
+          .limit(10);
+        if (error) throw error;
+        const rows = Array.isArray(data) ? data : [];
+        setLinkResults(rows.map(r => ({ id: Number(r.id), title: String(r.title || 'Untitled') })));
+      } catch(e) {
+        setLinkResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    };
+    run();
+  }, [linkOpen, linkMode, linkSearch]);
 
   const sanitizeIncomingHtml = (raw: string) => {
     let html = raw;
@@ -379,61 +422,37 @@ export function DashboardOverview() {
   };
 
   const insertLink = () => {
-    const url = window.prompt('Enter URL');
-    if (!url) return;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      lastRangeRef.current = sel.getRangeAt(0).cloneRange();
+    }
+    setLinkOpen(true);
+  };
+
+  const performInsertLink = (payload: { type: 'internal' | 'external'; post?: { id: number; title: string }; url?: string; }) => {
     const editor = editorRef.current;
     if (!editor) return;
     editor.focus();
     restoreSelection();
     const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) {
-      // No selection, append link with URL text
-      const a = document.createElement('a');
-      a.href = url;
-      a.textContent = url;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      editor.appendChild(a);
-      return;
+    const hadSelection = !!(sel && !sel.isCollapsed && sel.toString().length > 0);
+    let html = '';
+    if (payload.type === 'internal' && payload.post) {
+      const slug = slugifyTitle(payload.post.title);
+      const href = slug ? `/${slug}` : '/';
+      const text = hadSelection ? (sel!.toString()) : payload.post.title;
+      html = `<a href="${href}" data-article-id="${payload.post.id}" data-article-slug="${slug}">${text}</a>`;
+    } else if (payload.type === 'external' && payload.url) {
+      const url = String(payload.url).trim();
+      const text = hadSelection ? (sel!.toString()) : url;
+      html = `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`;
     }
-    const range = sel.getRangeAt(0);
-    const hadSelection = !sel.isCollapsed && sel.toString().length > 0;
-    if (hadSelection) {
-      // Try native execCommand first
-      applyFormat('createLink', url);
-      // If anchor not created, do manual replacement
-      const anchorInSelection = () => {
-        const node = sel.anchorNode as Node | null;
-        const el = node && node.nodeType === Node.TEXT_NODE ? node.parentNode as HTMLElement : node as HTMLElement;
-        return el && el.closest && el.closest('a');
-      };
-      if (!anchorInSelection()) {
-        const text = sel.toString();
-        const a = document.createElement('a');
-        a.href = url;
-        a.textContent = text;
-        a.target = '_blank';
-        a.rel = 'noopener noreferrer';
-        range.deleteContents();
-        range.insertNode(a);
-        range.setStartAfter(a);
-        range.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
-    } else {
-      // Collapsed caret: insert a link node with URL text at caret
-      const a = document.createElement('a');
-      a.href = url;
-      a.textContent = url;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      range.insertNode(a);
-      range.setStartAfter(a);
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
+    if (!html) { setLinkOpen(false); return; }
+    document.execCommand('insertHTML', false, html);
+    setLinkOpen(false);
+    setLinkSearch('');
+    setLinkResults([]);
+    setLinkUrlInput('');
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
@@ -667,6 +686,51 @@ export function DashboardOverview() {
           <div className="px-6 pb-6 flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setOpen(false)} disabled={isPublishing}>Cancel</Button>
             <Button className="bg-gradient-primary" onClick={handleSubmit} disabled={isPublishing}>{isPublishing ? 'Publishing…' : 'Publish'}</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Link Picker Dialog */}
+      <Dialog open={linkOpen} onOpenChange={setLinkOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Insert Link</DialogTitle>
+            <DialogDescription>Link to another post (inbound) or any URL (outbound).</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex gap-2">
+              <Button variant={linkMode==='internal'?'default':'outline'} size="sm" onClick={() => setLinkMode('internal')}>Inbound (Post)</Button>
+              <Button variant={linkMode==='external'?'default':'outline'} size="sm" onClick={() => setLinkMode('external')}>Outbound (URL)</Button>
+            </div>
+            {linkMode === 'internal' ? (
+              <div className="space-y-3">
+                <Label>Search posts</Label>
+                <Input placeholder="Type a post title" value={linkSearch} onChange={(e) => setLinkSearch(e.target.value)} />
+                <div className="max-h-48 overflow-auto border rounded">
+                  {isSearching ? (
+                    <div className="p-3 text-sm text-muted-foreground">Searching…</div>
+                  ) : linkResults.length === 0 ? (
+                    <div className="p-3 text-sm text-muted-foreground">No matches yet. Try typing the title.</div>
+                  ) : (
+                    <ul>
+                      {linkResults.map((r) => (
+                        <li key={r.id} className="p-2 hover:bg-muted/20 cursor-pointer" onClick={() => performInsertLink({ type: 'internal', post: r })}>
+                          {r.title}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <Label>URL</Label>
+                <Input placeholder="https://example.com/page" value={linkUrlInput} onChange={(e) => setLinkUrlInput(e.target.value)} />
+                <div className="flex justify-end">
+                  <Button onClick={() => performInsertLink({ type: 'external', url: linkUrlInput })} disabled={!linkUrlInput.trim()}>Insert Link</Button>
+                </div>
+              </div>
+            )}
           </div>
         </DialogContent>
       </Dialog>
